@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands
 
-from bot import database
+from bot.database import get_member_activity, get_top_mia_sessions
 
 OFFLINE_STATUSES = {discord.Status.offline, discord.Status.invisible}
 
@@ -34,6 +34,26 @@ def _format_timedelta(dt: datetime | None, label_if_none: str) -> str:
     return ", ".join(parts) + " ago"
 
 
+def _format_duration(delta: timedelta) -> str:
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 60:
+        return f"{total_seconds} second(s)"
+
+    days = delta.days
+    hours, remainder = divmod(delta.seconds, 3600)
+    minutes = remainder // 60
+
+    parts = []
+    if days:
+        parts.append(f"{days} day{'s' if days != 1 else ''}")
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes and not days:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+
+    return ", ".join(parts)
+
+
 class Commands(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -55,7 +75,7 @@ class Commands(commands.Cog):
             await ctx.send(f'Member "{target}" not found in this server.')
             return
 
-        activity = await database.get_member_activity(
+        activity = await get_member_activity(
             self.bot.pool, ctx.guild.id, member.id
         )
 
@@ -77,6 +97,46 @@ class Commands(commands.Cog):
         )
         await ctx.send(report)
 
+
+    @commands.command(name="topmia")
+    async def top_mia(self, ctx: commands.Context, n: int = 10) -> None:
+        """Show the top N longest M.I.A. sessions in this guild."""
+        if n < 1 or n > 50:
+            await ctx.send("Please provide a number between 1 and 50.")
+            return
+
+        rows = await get_top_mia_sessions(self.bot.pool, ctx.guild.id, n)
+        if not rows:
+            await ctx.send("No M.I.A. session data recorded yet.")
+            return
+
+        lines = [f"🏆 **Top {n} Longest M.I.A. Sessions**"]
+        for i, row in enumerate(rows, start=1):
+            member = ctx.guild.get_member(row["member_id"])
+            name = member.display_name if member else f"<Unknown:{row['member_id']}>"
+            duration = _format_duration(row["duration"])
+            suffix = " *(ongoing)*" if row["ended_at"] is None else ""
+            lines.append(f"{i}. **{name}** — {duration}{suffix}")
+
+        chunks, current = [], ""
+        for line in lines:
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) > 2000:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        for chunk in chunks:
+            await ctx.send(chunk)
+
+    @top_mia.error
+    async def top_mia_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        if isinstance(error, commands.BadArgument):
+            await ctx.send("Usage: `!topmia [N]` — N must be a whole number between 1 and 50.")
+        else:
+            raise error
 
     @mia.error
     async def mia_error(self, ctx: commands.Context, error: commands.CommandError) -> None:

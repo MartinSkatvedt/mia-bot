@@ -1,3 +1,5 @@
+import asyncio
+
 import discord
 from discord.ext import commands
 
@@ -34,12 +36,14 @@ class Tracking(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         # Seed last_online for members already offline when bot starts
-        for guild in self.bot.guilds:
-            for member in guild.members:
-                if not member.bot and member.status in OFFLINE_STATUSES:
-                    await database.upsert_last_online(
-                        self.bot.pool, guild.id, member.id
-                    )
+        tasks = [
+            database.upsert_last_online(self.bot.pool, guild.id, member.id)
+            for guild in self.bot.guilds
+            for member in guild.members
+            if not member.bot and member.status in OFFLINE_STATUSES
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)
 
 
 async def setup(bot: commands.Bot) -> None:
